@@ -1,0 +1,445 @@
+# ESPHome Native API over Wi-Fi + Matter BLE commissioning into Thread.
+# ESP32-C6 SuperMini, ESP-IDF. No preconfigured Thread dataset.
+# Experimental firmware: USB flash and hardware validation required.
+# UART TX19/RX20. Runtime detection: TaiSEIA 9600 8N1 / S21 2400 8E2.
+# Requires the correct level shifter and appliance connector; software cannot identify wiring.
+
+substitutions:
+  devicename: alefa-climate
+  upper_devicename: "Alpha"
+  tx_pin_io: GPIO19
+  rx_pin_io: GPIO20
+  # Replace this placeholder before building a local device image.
+  setup_password: "CHANGE_ME_SETUP_PASSWORD"
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${upper_devicename}
+  # Share the toolchain cache; delivered AC BINs remain in release-v0.4.3.
+  build_path: build/hitachi-c6-pairing
+  min_version: 2026.10.1
+  comment: "Auto TaiSEIA AC/dehumidifier + Daikin S21 + Matter + return-air temperature"
+  name_add_mac_suffix: true
+  project:
+    name: "alefa.universal-c6"
+    version: "0.6.11"
+
+esp32:
+  variant: ESP32C6
+  flash_size: 4MB
+  partitions: Climate-C6-Pairing-partitions.csv
+  framework:
+    type: esp-idf
+    version: 5.5.6
+
+external_components:
+  # Protocol references and licenses: appliance_auto/SOURCES.txt.
+  - source:
+      type: local
+      path: universal_c6_components
+    components: [matter, pairing_portal, appliance_auto]
+
+network:
+  enable_ipv6: true
+
+mdns:
+  disabled: false
+
+wifi:
+  ap:
+    password: ${setup_password}
+    ap_timeout: 0s
+  reboot_timeout: 0s
+  power_save_mode: LIGHT
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_rgb
+    internal: true
+    pin: GPIO8
+    num_leds: 1
+    chipset: WS2812
+    # ESP32-C6 SuperMini onboard WS2812 uses GRB channel order.
+    rgb_order: GRB
+    restore_mode: ALWAYS_OFF
+
+interval:
+  - interval: 80ms
+    then:
+      - lambda: |-
+          // A live appliance handshake is the highest-priority status: green.
+          // Once Matter is paired, blue is used only when the appliance link
+          // is not currently live; red means setup/Wi-Fi without a handshake.
+          // Brightness oscillates so a repeated state remains visible.
+          static float phase = 0.0f;
+          phase += 0.10f;
+          if (phase > 6.2831853f) phase -= 6.2831853f;
+          const float brightness = 0.12f + 0.18f * (0.5f + 0.5f * sinf(phase));
+          const int mode = id(appliance).online() ? 1 :
+                           id(matter_bridge).commissioned() ? 2 : 0;
+          auto call = id(status_rgb).turn_on();
+          call.set_transition_length(0);
+          call.set_brightness(brightness);
+          if (mode == 2) call.set_rgb(0.0f, 0.15f, 1.0f);
+          else if (mode == 1) call.set_rgb(0.0f, 1.0f, 0.0f);
+          else call.set_rgb(1.0f, 0.0f, 0.0f);
+          call.perform();
+
+# ESPHome integration uses Wi-Fi. Matter independently uses Thread.
+# 4 MB single-app layout: updates use USB, not OTA.
+api:
+  reboot_timeout: 0s
+
+uart:
+  id: uart_taixia
+  tx_pin: ${tx_pin_io}
+  rx_pin: ${rx_pin_io}
+  baud_rate: 9600
+  rx_buffer_size: 512
+
+appliance_auto:
+  id: appliance
+  uart_id: uart_taixia
+  matter_id: matter_bridge
+  status:
+    name: Appliance Connection
+  brand:
+    name: Appliance Brand
+  model:
+    name: Appliance Model
+  protocol:
+    name: Appliance Protocol
+
+binary_sensor:
+  - platform: gpio
+    id: setup_button
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 30ms
+    on_click:
+      - min_length: 10s
+        max_length: 60s
+        then:
+          - lambda: id(matter_bridge).factory_reset_all();
+  - platform: status
+    name: Status
+  - platform: appliance_auto
+    name: "水箱滿水 DH Tank"
+    appliance_id: appliance
+    service: 10
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "除濕濾網通知 DH Filter"
+    appliance_id: appliance
+    service: 11
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "除霜中 DH Defrost"
+    appliance_id: appliance
+    service: 17
+    profile: dehumidifier
+
+# Both entities are generated; only the detected type is exposed at boot.
+climate:
+  - platform: appliance_auto
+    id: appliance_climate
+    name: "空調"
+    appliance_id: appliance
+fan:
+  - platform: appliance_auto
+    id: appliance_fan
+    name: "除濕機"
+    appliance_id: appliance
+    profile: dehumidifier
+  - platform: appliance_auto
+    id: appliance_ac_fan
+    name: "空調風速"
+    appliance_id: appliance
+    profile: ac
+
+# The following service entities follow the service IDs and ranges used by
+# the upstream tsunglung/taixia examples.  They are hidden automatically
+# when the runtime detector selects another profile.
+switch:
+  - platform: appliance_auto
+    name: "上下擺風 AC Vertical"
+    appliance_id: appliance
+    service: 14
+    profile: ac
+  - platform: appliance_auto
+    name: "左右擺風 AC Horizontal"
+    appliance_id: appliance
+    service: 16
+    profile: ac
+  - platform: appliance_auto
+    name: "睡眠 AC Sleep"
+    appliance_id: appliance
+    service: 5
+    profile: ac
+  - platform: appliance_auto
+    name: "空氣清淨 AC Purifier"
+    appliance_id: appliance
+    service: 8
+    profile: ac
+  - platform: appliance_auto
+    name: "濾網通知 AC Filter"
+    appliance_id: appliance
+    service: 18
+    profile: ac
+  - platform: appliance_auto
+    name: "自動除霉 AC Mildew"
+    appliance_id: appliance
+    service: 23
+    profile: ac
+  - platform: appliance_auto
+    name: "自我清潔 AC Clean"
+    appliance_id: appliance
+    service: 24
+    profile: ac
+  - platform: appliance_auto
+    name: "強力模式 AC Boost"
+    appliance_id: appliance
+    service: 26
+    profile: ac
+  - platform: appliance_auto
+    name: "省電模式 AC Eco"
+    appliance_id: appliance
+    service: 27
+    profile: ac
+  - platform: appliance_auto
+    name: "空調蜂鳴器 AC Beeper"
+    appliance_id: appliance
+    service: 30
+    profile: ac
+  - platform: appliance_auto
+    name: "加濕 AC Moisture"
+    appliance_id: appliance
+    service: 32
+    profile: ac
+  - platform: appliance_auto
+    name: "結霜清洗 AC Frost"
+    appliance_id: appliance
+    service: 57
+    profile: ac
+  - platform: appliance_auto
+    name: "自動風量 DH Auto"
+    appliance_id: appliance
+    service: 8
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "除霉 DH Mildew"
+    appliance_id: appliance
+    service: 19
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "濕度通知 DH Humidity"
+    appliance_id: appliance
+    service: 20
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "童鎖 DH Lock"
+    appliance_id: appliance
+    service: 22
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "除濕機提示音 DH Beeper"
+    appliance_id: appliance
+    service: 24
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "PM2.5 偵測 DH PM25"
+    appliance_id: appliance
+    service: 41
+    profile: dehumidifier
+
+number:
+  - platform: appliance_auto
+    name: "睡眠計時 AC Sleep Timer"
+    appliance_id: appliance
+    service: 6
+    min_value: 0
+    max_value: 1440
+    step: 1
+    profile: ac
+  - platform: appliance_auto
+    name: "開機計時 AC On Timer"
+    appliance_id: appliance
+    service: 11
+    min_value: 0
+    max_value: 1440
+    step: 1
+    profile: ac
+  - platform: appliance_auto
+    name: "關機計時 AC Off Timer"
+    appliance_id: appliance
+    service: 12
+    min_value: 0
+    max_value: 1440
+    step: 1
+    profile: ac
+  - platform: appliance_auto
+    name: "上下擺風角度 AC Vertical Level"
+    appliance_id: appliance
+    service: 15
+    min_value: 0
+    max_value: 15
+    step: 1
+    profile: ac
+  - platform: appliance_auto
+    name: "左右擺風角度 AC Horizontal Level"
+    appliance_id: appliance
+    service: 17
+    min_value: 0
+    max_value: 15
+    step: 1
+    profile: ac
+  - platform: appliance_auto
+    name: "目標濕度 DH RH"
+    appliance_id: appliance
+    service: 3
+    min_value: 40
+    max_value: 70
+    step: 1
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "除濕強度 DH Level"
+    appliance_id: appliance
+    service: 4
+    min_value: 0
+    max_value: 15
+    step: 1
+    profile: dehumidifier
+  - platform: appliance_auto
+    name: "除濕風速 DH Fan Level"
+    appliance_id: appliance
+    service: 14
+    min_value: 0
+    max_value: 15
+    step: 1
+    profile: dehumidifier
+
+select:
+  - platform: appliance_auto
+    name: "除濕模式 DH Mode"
+    appliance_id: appliance
+    service: 1
+    profile: dehumidifier
+    options: [auto, normal, away, boost, baby, sleep, fan, comfort, home, eco]
+
+sensor:
+  - platform: appliance_auto
+    name: "空調運轉電流 AC Current"
+    appliance_id: appliance
+    service: 36
+    divisor: 10
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    profile: ac
+  - platform: appliance_auto
+    name: "空調運轉電壓 AC Voltage"
+    appliance_id: appliance
+    service: 37
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    profile: ac
+  - platform: appliance_auto
+    name: "空調功率 AC Power"
+    appliance_id: appliance
+    service: 39
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    profile: ac
+  - platform: appliance_auto
+    name: "空調累計能耗 AC Energy"
+    appliance_id: appliance
+    service: 40
+    divisor: 10
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    profile: ac
+  - platform: uptime
+    name: Uptime
+    filters:
+      - lambda: return x / 3600;
+    unit_of_measurement: h
+    accuracy_decimals: 1
+  - platform: internal_temperature
+    name: Internal Temperature
+
+matter:
+  ble_thread: true
+  pause_wifi_during_commissioning: true
+  id: matter_bridge
+  product_name: "Alpha Universal"
+  endpoints:
+    1:
+      id: ac_endpoint
+      thermostat:
+        with_features: [heating, cooling, auto_mode]
+      clusters:
+        fan_control:
+          with_features: [multi_speed, auto, rocking]
+      on_attribute:
+        thermostat.system_mode:
+          - lambda: id(appliance).matter_mode(value);
+        thermostat.occupied_heating_setpoint:
+          - lambda: id(appliance).matter_target(true, value);
+        thermostat.occupied_cooling_setpoint:
+          - lambda: id(appliance).matter_target(false, value);
+        fan_control.fan_mode:
+          - lambda: id(appliance).matter_fan_mode(value);
+        fan_control.percent_setting:
+          - lambda: id(appliance).matter_fan_percent(value);
+        fan_control.speed_setting:
+          - lambda: id(appliance).matter_fan_speed(value);
+        fan_control.rock_setting:
+          - lambda: id(appliance).matter_vertical_swing(value);
+    4:
+      id: dehumidifier_endpoint
+      fan:
+        with_features: [multi_speed]
+
+button:
+  - platform: restart
+    name: Restart
+  - platform: template
+    name: Matter Factory Reset
+    entity_category: config
+    disabled_by_default: true
+    on_press:
+      - matter.factory_reset:
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: WiFi IP Address
+  - platform: version
+    name: ESPHome Version
+  - platform: matter
+    qr_code:
+      name: Matter QR Code
+      internal: true
+    manual_pairing_code:
+      name: Matter Pairing Code
+      internal: true
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+pairing_portal:
+  id: setup_portal
+  matter_id: matter_bridge
+  password: ${setup_password}

@@ -1,0 +1,12 @@
+# Alpha Universal C6 development repository
+# Build output and private credentials are intentionally excluded.
+**/.esphome/
+**/.pioenvs/
+**/.pio/libdeps/
+*.elf
+*.map
+*.log
+*.exit
+*.bin
+*.zip
+.climate-c6-pairing-credentials.yaml

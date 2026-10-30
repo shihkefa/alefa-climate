@@ -1,0 +1,26 @@
+Alpha Universal 0.6.2
+
+This component is a new bounded, single-owner UART implementation, using protocol
+mappings from the following upstream sources. It does NOT run the complete upstream
+drivers and does not claim all optional features or all appliance models.
+
+TaiSEIA protocol and dehumidifier four-speed profiles:
+https://github.com/tsunglung/taixia
+commit 581bd578407a166f1d15a9058ae114d5a5a7458f
+Reference: components/taixia, Hitachi RD-240HH, Panasonic FYTW-08810115 and
+Daikin dehumidifier YAML examples. Upstream license: TAIXIA-LICENSE (LGPL-2.1).
+
+Daikin S21 framing, checksums, mode/fan/temperature encodings and ACK delays:
+https://github.com/asund/esphome-daikin-s21
+commit 7f2abb14128d927b1a75df66ef7ba6fc6bf3d97a
+Reference: components/daikin_s21/s21.cpp, daikin_s21_types.h.
+Upstream license: LICENSE (GPL-3.0). This derived component is GPL-3.0-or-later.
+Included source and exact revision information must accompany redistribution
+according to the applicable licenses. All hardware behavior remains unverified.
+
+Supported basic protocol subset:
+TaiSEIA: read registration, SA ID, brand/model, full status; AC writes power,
+mode, target temperature, fan; dehumidifier writes only power and fan level.
+S21: F1/G1 basic status, FC/GC optional model code, RH/SH optional temperature,
+D1 power/mode/temperature/fan. Does not implement P1/P2, S403 without S21 support,
+X50A-only protocols, swing/presets, or optional feature negotiation.
